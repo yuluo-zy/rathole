@@ -44,6 +44,7 @@ pub async fn run_client(
             let mut client = Client::<TcpTransport>::from(config).await?;
             client.run(shutdown_rx, update_rx).await
         }
+        // todo 添加 quic
         TransportType::Tls => {
             #[cfg(feature = "tls")]
             {
@@ -78,7 +79,9 @@ struct Client<T: Transport> {
 impl<T: 'static + Transport> Client<T> {
     // Create a Client from `[client]` config block
     async fn from(config: ClientConfig) -> Result<Client<T>> {
+        // 创建传输 数组
         let transport =
+        // 这里是个 泛化的调用
             Arc::new(T::new(&config.transport).with_context(|| "Failed to create the transport")?);
         Ok(Client {
             config,
@@ -162,6 +165,7 @@ struct RunDataChannelArgs<T: Transport> {
     service: ClientServiceConfig,
 }
 
+// 数据通道握手
 async fn do_data_channel_handshake<T: Transport>(
     args: Arc<RunDataChannelArgs<T>>,
 ) -> Result<T::Stream> {
@@ -399,6 +403,7 @@ impl<T: 'static + Transport> ControlChannel<T> {
             .connect(&remote_addr)
             .await
             .with_context(|| format!("Failed to connect to {}", &self.remote_addr))?;
+        // 用来设置传输协议参数设定
         T::hint(&conn, SocketOpts::for_control_channel());
 
         // Send hello
@@ -440,7 +445,7 @@ impl<T: 'static + Transport> ControlChannel<T> {
 
         // Channel ready
         info!("Control channel established");
-
+        // 握手结束
         // Socket options for the data channel
         let socket_opts = SocketOpts::from_client_cfg(&self.service);
         let data_ch_args = Arc::new(RunDataChannelArgs {
@@ -453,6 +458,7 @@ impl<T: 'static + Transport> ControlChannel<T> {
 
         loop {
             tokio::select! {
+                // 是从 服务端接受命令来进行心跳检查或者是创建 数据传输窗口
                 val = read_control_cmd(&mut conn) => {
                     let val = val?;
                     debug!( "Received {:?}", val);
@@ -460,6 +466,7 @@ impl<T: 'static + Transport> ControlChannel<T> {
                         ControlChannelCmd::CreateDataChannel => {
                             let args = data_ch_args.clone();
                             tokio::spawn(async move {
+                                // 创建数据通道, 这里开始才是真的开始传输数据
                                 if let Err(e) = run_data_channel(args).await.with_context(|| "Failed to run the data channel") {
                                     warn!("{:#}", e);
                                 }
@@ -487,11 +494,11 @@ impl ControlChannelHandle {
     fn new<T: 'static + Transport>(
         service: ClientServiceConfig,
         remote_addr: String,
-        transport: Arc<T>,
+        transport: Arc<T>, // 传输层
         heartbeat_timeout: u64,
     ) -> ControlChannelHandle {
         let digest = protocol::digest(service.name.as_bytes());
-
+        // 转16进制编码
         info!("Starting {}", hex::encode(digest));
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let mut s = ControlChannel {
@@ -505,6 +512,7 @@ impl ControlChannelHandle {
 
         tokio::spawn(
             async move {
+                // 生成推迟时间
                 let mut backoff = run_control_chan_backoff();
                 let mut start = Instant::now();
 

@@ -29,6 +29,7 @@ impl AddrMaybeCached {
     }
 
     pub async fn resolve(&mut self) -> Result<()> {
+        // 通过字符串转socket
         match to_socket_addr(&self.addr).await {
             Ok(s) => {
                 self.socket_addr = Some(s);
@@ -66,6 +67,7 @@ pub trait Transport: Debug + Send + Sync {
     async fn handshake(&self, conn: Self::RawStream) -> Result<Self::Stream>;
     async fn connect(&self, addr: &AddrMaybeCached) -> Result<Self::Stream>;
 }
+// 先是 connect -> hint
 
 mod tcp;
 pub use tcp::TcpTransport;
@@ -76,6 +78,9 @@ pub use tls::TlsTransport;
 
 #[cfg(feature = "noise")]
 mod noise;
+#[cfg(feature = "quic")]
+mod quic;
+
 #[cfg(feature = "noise")]
 pub use noise::NoiseTransport;
 

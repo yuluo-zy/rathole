@@ -40,6 +40,8 @@ impl From<&str> for MaskedString {
 
 #[derive(Debug, Serialize, Deserialize, Copy, Clone, PartialEq, Eq)]
 pub enum TransportType {
+    #[serde(rename = "quic")]
+    Quic,
     #[serde(rename = "tcp")]
     Tcp,
     #[serde(rename = "tls")]

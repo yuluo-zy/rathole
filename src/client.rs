@@ -205,10 +205,14 @@ async fn do_data_channel_handshake<T: Transport>(
 
 async fn run_data_channel<T: Transport>(args: Arc<RunDataChannelArgs<T>>) -> Result<()> {
     // Do the handshake
+    // 进行数据通道握手
+    // 这里创建quic的协议内容使用
     let mut conn = do_data_channel_handshake(args.clone()).await?;
 
     // Forward
+    // 进行数据通道转发, 数据通道当前是双向同步写, 这里是先建立针对本地代理的端口
     match read_data_cmd(&mut conn).await? {
+        // 这里的tcp与udp 是客户端和本地要反向代理的端口 建立不同的协议种类的方法
         DataChannelCmd::StartForwardTcp => {
             if args.service.service_type != ServiceType::Tcp {
                 bail!("Expect TCP traffic. Please check the configuration.")

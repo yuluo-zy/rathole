@@ -45,18 +45,13 @@
 
 use quinn::{ClientConfig, Endpoint, ServerConfig};
 use std::{error::Error, net::SocketAddr, sync::Arc};
+use crate::config::SkipServerVerification;
 
-/// Constructs a QUIC endpoint configured for use a client only.
-///
-/// ## Args
-///
-/// - server_certs: list of trusted certificates.
-#[allow(unused)]
+
 pub fn make_client_endpoint(
     bind_addr: SocketAddr,
-    server_certs: &[&[u8]],
 ) -> Result<Endpoint, Box<dyn Error>> {
-    let client_cfg = configure_client(server_certs)?;
+    let client_cfg = configure_client()?;
     let mut endpoint = Endpoint::client(bind_addr)?;
     endpoint.set_default_client_config(client_cfg);
     Ok(endpoint)
@@ -76,22 +71,19 @@ pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<((Endpoint, quinn::
     Ok((endpoint, server_cert))
 }
 
-/// Builds default quinn client config and trusts given certificates.
-///
-/// ## Args
-///
-/// - server_certs: a list of trusted certificates in DER format.
-fn configure_client(server_certs: &[&[u8]]) -> Result<ClientConfig, Box<dyn Error>> {
-    let mut certs = rustls::RootCertStore::empty();
-    for cert in server_certs {
-        certs.add(&rustls::Certificate(cert.to_vec()))?;
-    }
 
-    Ok(ClientConfig::with_root_certificates(certs))
+fn configure_client() -> Result<ClientConfig, Box<dyn Error>> {
+    // 取消对证书的验证
+    let crypto = rustls::ClientConfig::builder()
+        .with_safe_defaults()
+        .with_custom_certificate_verifier(SkipServerVerification::new())
+        .with_no_client_auth();
+
+    Ok(ClientConfig::new(Arc::new(crypto)))
 }
 
 fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
-    // let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
     let cert_der = cert.serialize_der().unwrap();
     let priv_key = cert.serialize_private_key_der();
     let priv_key = rustls::PrivateKey(priv_key);

@@ -5,10 +5,13 @@ use bytes::{Bytes, BytesMut};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+use quinn::{RecvStream, SendStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::trace;
+use crate::client::QuicConn;
 
 type ProtocolVersion = u8;
+
 const _PROTO_V0: u8 = 0u8;
 const PROTO_V1: u8 = 1u8;
 
@@ -18,7 +21,8 @@ pub type Digest = [u8; HASH_WIDTH_IN_BYTES];
 
 #[derive(Deserialize, Serialize, Debug)]
 pub enum Hello {
-    ControlChannelHello(ProtocolVersion, Digest), // sha256sum(service name) or a nonce
+    ControlChannelHello(ProtocolVersion, Digest),
+    // sha256sum(service name) or a nonce
     DataChannelHello(ProtocolVersion, Digest),    // token provided by CreateDataChannel
 }
 
@@ -58,7 +62,9 @@ pub enum DataChannelCmd {
     StartForwardUdp,
 }
 
-type UdpPacketLen = u16; // `u16` should be enough for any practical UDP traffic on the Internet
+type UdpPacketLen = u16;
+
+// `u16` should be enough for any practical UDP traffic on the Internet
 #[derive(Deserialize, Serialize, Debug)]
 struct UdpHeader {
     from: SocketAddr,
@@ -240,5 +246,13 @@ pub async fn read_data_cmd<T: AsyncRead + AsyncWrite + Unpin>(
     conn.read_exact(&mut bytes)
         .await
         .with_context(|| "Failed to read cmd")?;
+    bincode::deserialize(&bytes).with_context(|| "Failed to deserialize data cmd")
+}
+
+pub async fn read_quic_data_cmd(
+    conn: &mut QuicConn,
+) -> Result<DataChannelCmd> {
+    let mut bytes = vec![0u8; PACKET_LEN.d_cmd];
+    conn.1.read_exact(&mut bytes).await.with_context(|| "Failed to read cmd")?;
     bincode::deserialize(&bytes).with_context(|| "Failed to deserialize data cmd")
 }

@@ -2,19 +2,21 @@ use crate::config::{ClientConfig, ClientServiceConfig, Config, ServiceType, Tran
 use crate::config_watcher::{ClientServiceChange, ConfigChange};
 use crate::helper::udp_connect;
 use crate::protocol::Hello::{self, *};
-use crate::protocol::{
-    self, read_ack, read_control_cmd, read_data_cmd, read_hello, Ack, Auth, ControlChannelCmd,
-    DataChannelCmd, UdpTraffic, CURRENT_PROTO_VERSION, HASH_WIDTH_IN_BYTES,
-};
+use crate::protocol::{self, read_ack, read_control_cmd, read_data_cmd, read_hello, Ack, Auth, ControlChannelCmd, DataChannelCmd, UdpTraffic, CURRENT_PROTO_VERSION, HASH_WIDTH_IN_BYTES, read_quic_data_cmd};
 use crate::transport::{AddrMaybeCached, SocketOpts, TcpTransport, Transport};
 use anyhow::{anyhow, bail, Context, Result};
 use backoff::ExponentialBackoff;
 use backoff::{backoff::Backoff, future::retry_notify};
 use bytes::{Bytes, BytesMut};
 use std::collections::HashMap;
+use std::io::Error;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
-use tokio::io::{self, copy_bidirectional, AsyncReadExt, AsyncWriteExt};
+use std::task::{Poll, ready};
+use futures::AsyncWrite;
+use quinn::{NewConnection, RecvStream, SendStream};
+use tokio::io::{self, copy_bidirectional, AsyncReadExt, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{broadcast, mpsc, oneshot, RwLock};
 use tokio::time::{self, Duration, Instant};
@@ -26,7 +28,8 @@ use crate::transport::NoiseTransport;
 use crate::transport::TlsTransport;
 
 use crate::constants::{run_control_chan_backoff, UDP_BUFFER_SIZE, UDP_SENDQ_SIZE, UDP_TIMEOUT};
-
+use crate::transport::quic::make_client_endpoint;
+pub struct QuicConn((SendStream, RecvStream));
 // The entrypoint of running a client
 pub async fn run_client(
     config: Config,
@@ -63,6 +66,7 @@ pub async fn run_client(
             #[cfg(not(feature = "noise"))]
             crate::helper::feature_not_compile("noise")
         }
+        _ => {Ok(())}
     }
 }
 
@@ -164,75 +168,101 @@ struct RunDataChannelArgs<T: Transport> {
     socket_opts: SocketOpts,
     service: ClientServiceConfig,
 }
+static SERVER_NAME: &str = "localhost";
 
 // 数据通道握手
 async fn do_data_channel_handshake<T: Transport>(
     args: Arc<RunDataChannelArgs<T>>,
-) -> Result<T::Stream> {
+) -> Result<QuicConn> {
     // Retry at least every 100ms, at most for 10 seconds
     let backoff = ExponentialBackoff {
         max_interval: Duration::from_millis(100),
         max_elapsed_time: Some(Duration::from_secs(10)),
         ..Default::default()
     };
-
     // Connect to remote_addr
-    let mut conn: T::Stream = retry_notify(
+    let mut conn: NewConnection = retry_notify(
         backoff,
         || async {
-            args.connector
-                .connect(&args.remote_addr)
-                .await
-                .with_context(|| format!("Failed to connect to {}", &args.remote_addr))
-                .map_err(backoff::Error::transient)
+            let endpoint = make_client_endpoint("0.0.0.0:4444".parse().unwrap()).unwrap();
+            Ok(endpoint.connect(args.remote_addr.socket_addr.unwrap(), SERVER_NAME).unwrap().await?)
         },
         |e, duration| {
             warn!("{:#}. Retry in {:?}", e, duration);
-        },
-    )
-    .await?;
+        }
+    ).await?;
 
-    T::hint(&conn, args.socket_opts);
+    // T::hint(&conn, args.socket_opts);
+    let (mut send, recv) = conn.connection.open_bi().await.unwrap();
 
     // Send nonce
     let v: &[u8; HASH_WIDTH_IN_BYTES] = args.session_key[..].try_into().unwrap();
     let hello = Hello::DataChannelHello(CURRENT_PROTO_VERSION, v.to_owned());
-    conn.write_all(&bincode::serialize(&hello).unwrap()).await?;
-    conn.flush().await?;
+    send.write_all(&bincode::serialize(&hello).unwrap()).await?;
+    send.flush().await?;
 
-    Ok(conn)
+    Ok(QuicConn((send, recv)))
 }
 
 async fn run_data_channel<T: Transport>(args: Arc<RunDataChannelArgs<T>>) -> Result<()> {
     // Do the handshake
     // 进行数据通道握手
     // 这里创建quic的协议内容使用
-    let mut conn = do_data_channel_handshake(args.clone()).await?;
+
+
+
+    let mut conn = do_data_channel_handshake(args.clone(), ).await?;
 
     // Forward
     // 进行数据通道转发, 数据通道当前是双向同步写, 这里是先建立针对本地代理的端口
-    match read_data_cmd(&mut conn).await? {
+    match read_quic_data_cmd( &mut conn).await? {
         // 这里的tcp与udp 是客户端和本地要反向代理的端口 建立不同的协议种类的方法
         DataChannelCmd::StartForwardTcp => {
             if args.service.service_type != ServiceType::Tcp {
                 bail!("Expect TCP traffic. Please check the configuration.")
             }
-            run_data_channel_for_tcp::<T>(conn, &args.service.local_addr).await?;
+            run_data_channel_for_tcp(conn, &args.service.local_addr).await?;
         }
-        DataChannelCmd::StartForwardUdp => {
-            if args.service.service_type != ServiceType::Udp {
-                bail!("Expect UDP traffic. Please check the configuration.")
-            }
-            run_data_channel_for_udp::<T>(conn, &args.service.local_addr).await?;
-        }
+        // DataChannelCmd::StartForwardUdp => {
+        //     if args.service.service_type != ServiceType::Udp {
+        //         bail!("Expect UDP traffic. Please check the configuration.")
+        //     }
+        //     run_data_channel_for_udp::<T>(conn, &args.service.local_addr).await?;
+        // }
+        _ => {}
     }
     Ok(())
 }
 
+impl  tokio::io::AsyncRead for QuicConn {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        ready!(RecvStream::poll_read(self.1.get_mut(), cx, buf))?;
+        Poll::Ready(Ok(()))
+    }
+}
+impl tokio::io::AsyncWrite for QuicConn {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &[u8]) -> Poll<std::result::Result<usize, Error>> {
+        // SendStream::execute_poll(self.get_mut(), cx, |stream| stream.write(buf)).map_err(Into::into)
+        AsyncWrite::poll_write(self.0.clon(),cx,buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<std::result::Result<(), Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<std::result::Result<(), Error>> {
+        AsyncWrite::poll_close(self.0.clon(), cx)
+    }
+}
+
 // Simply copying back and forth for TCP
 #[instrument(skip(conn))]
-async fn run_data_channel_for_tcp<T: Transport>(
-    mut conn: T::Stream,
+async fn run_data_channel_for_tcp(
+    mut conn: QuicConn,
     local_addr: &str,
 ) -> Result<()> {
     debug!("New data channel starts forwarding");
@@ -240,6 +270,7 @@ async fn run_data_channel_for_tcp<T: Transport>(
     let mut local = TcpStream::connect(local_addr)
         .await
         .with_context(|| format!("Failed to connect to {}", local_addr))?;
+     // 远端的读写流和本地的读写流已经完成
     let _ = copy_bidirectional(&mut conn, &mut local).await;
     Ok(())
 }

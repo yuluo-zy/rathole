@@ -319,16 +319,16 @@ impl Config {
     }
 }
 // 跳过验证ssl
-struct SkipServerVerification;
+pub struct SkipServerVerification;
 
 impl SkipServerVerification {
-    fn new() -> Arc<Self> {
+   pub fn new() -> Arc<Self> {
         Arc::new(Self)
     }
 }
 
 impl rustls::client::ServerCertVerifier for SkipServerVerification {
-    fn verify_server_cert(
+     fn verify_server_cert(
         &self,
         _end_entity: &rustls::Certificate,
         _intermediates: &[rustls::Certificate],

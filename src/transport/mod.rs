@@ -79,7 +79,7 @@ pub use tls::TlsTransport;
 #[cfg(feature = "noise")]
 mod noise;
 #[cfg(feature = "quic")]
-mod quic;
+pub mod quic;
 
 #[cfg(feature = "noise")]
 pub use noise::NoiseTransport;

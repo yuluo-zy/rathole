@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use quinn::{RecvStream, SendStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tracing::trace;
-use crate::client::QuicConn;
+use crate::transport::quic::QuicConn;
 
 type ProtocolVersion = u8;
 
@@ -253,6 +253,6 @@ pub async fn read_quic_data_cmd(
     conn: &mut QuicConn,
 ) -> Result<DataChannelCmd> {
     let mut bytes = vec![0u8; PACKET_LEN.d_cmd];
-    conn.1.read_exact(&mut bytes).await.with_context(|| "Failed to read cmd")?;
+    conn.recv.read_exact(&mut bytes).await.with_context(|| "Failed to read cmd")?;
     bincode::deserialize(&bytes).with_context(|| "Failed to deserialize data cmd")
 }

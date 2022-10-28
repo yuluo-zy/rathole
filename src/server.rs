@@ -50,7 +50,7 @@ pub async fn run_server(
         };
 
     match config.transport.transport_type {
-        TransportType::Tcp => {
+        TransportType::Tcp | TransportType:: Quic => {
             let mut server = Server::<TcpTransport>::from(config).await?;
             server.run(shutdown_rx, update_rx).await?;
         }

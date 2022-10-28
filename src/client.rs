@@ -13,7 +13,6 @@ use std::io::Error;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Poll, ready};
 use futures::AsyncWrite;
 use quinn::{NewConnection, RecvStream, SendStream};
 use tokio::io::{self, copy_bidirectional, AsyncReadExt, AsyncWriteExt, ReadBuf};
@@ -28,8 +27,7 @@ use crate::transport::NoiseTransport;
 use crate::transport::TlsTransport;
 
 use crate::constants::{run_control_chan_backoff, UDP_BUFFER_SIZE, UDP_SENDQ_SIZE, UDP_TIMEOUT};
-use crate::transport::quic::make_client_endpoint;
-pub struct QuicConn((SendStream, RecvStream));
+use crate::transport::quic::{make_client_endpoint, QuicConn};
 // The entrypoint of running a client
 pub async fn run_client(
     config: Config,
@@ -201,7 +199,7 @@ async fn do_data_channel_handshake<T: Transport>(
     send.write_all(&bincode::serialize(&hello).unwrap()).await?;
     send.flush().await?;
 
-    Ok(QuicConn((send, recv)))
+    Ok(QuicConn::new(send, recv))
 }
 
 async fn run_data_channel<T: Transport>(args: Arc<RunDataChannelArgs<T>>) -> Result<()> {
@@ -234,30 +232,8 @@ async fn run_data_channel<T: Transport>(args: Arc<RunDataChannelArgs<T>>) -> Res
     Ok(())
 }
 
-impl  tokio::io::AsyncRead for QuicConn {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        ready!(RecvStream::poll_read(self.1.get_mut(), cx, buf))?;
-        Poll::Ready(Ok(()))
-    }
-}
-impl tokio::io::AsyncWrite for QuicConn {
-    fn poll_write(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &[u8]) -> Poll<std::result::Result<usize, Error>> {
-        // SendStream::execute_poll(self.get_mut(), cx, |stream| stream.write(buf)).map_err(Into::into)
-        AsyncWrite::poll_write(self.0.clon(),cx,buf)
-    }
 
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<std::result::Result<(), Error>> {
-        Poll::Ready(Ok(()))
-    }
 
-    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<std::result::Result<(), Error>> {
-        AsyncWrite::poll_close(self.0.clon(), cx)
-    }
-}
 
 // Simply copying back and forth for TCP
 #[instrument(skip(conn))]

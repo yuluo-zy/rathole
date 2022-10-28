@@ -43,9 +43,15 @@
 // }
 
 
-use quinn::{ClientConfig, Endpoint, ServerConfig};
-use std::{error::Error, net::SocketAddr, sync::Arc};
+use quinn::{ClientConfig, Endpoint, RecvStream, SendStream, ServerConfig};
+use std::{error::Error, net::SocketAddr, sync::Arc,};
+use std::io::Result as NetResult;
+use std::io::IoSlice;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, ReadBuf};
 use crate::config::SkipServerVerification;
+
 
 
 pub fn make_client_endpoint(
@@ -57,14 +63,7 @@ pub fn make_client_endpoint(
     Ok(endpoint)
 }
 
-/// Constructs a QUIC endpoint configured to listen for incoming connections on a certain address
-/// and port.
-///
-/// ## Returns
-///
-/// - a stream of incoming QUIC connections
-/// - server certificate serialized into DER format
-#[allow(unused)]
+
 pub fn make_server_endpoint(bind_addr: SocketAddr) -> Result<((Endpoint, quinn::Incoming), Vec<u8>), Box<dyn Error>> {
     let (server_config, server_cert) = configure_server()?;
     let endpoint = Endpoint::server(server_config, bind_addr)?;
@@ -99,3 +98,67 @@ fn configure_server() -> Result<(ServerConfig, Vec<u8>), Box<dyn Error>> {
 
 #[allow(unused)]
 pub const ALPN_QUIC_HTTP: &[&[u8]] = &[b"hq-29"];
+
+
+pub struct QuicConn{
+    pub send: SendStream,
+    pub recv: RecvStream,
+}
+
+impl QuicConn{
+    pub fn new(send: SendStream,recv: RecvStream) -> Self {
+        QuicConn{
+            send,
+            recv
+        }
+    }
+}
+
+impl  tokio::io::AsyncRead for QuicConn {
+    #[inline]
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<NetResult<()>> {
+        Pin::new(&mut self.recv).poll_read(cx, buf)
+    }
+}
+
+
+
+
+impl tokio::io::AsyncWrite for QuicConn {
+    #[inline]
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<NetResult<usize>> {
+        Pin::new(&mut self.send).poll_write(cx, buf)
+    }
+
+    #[inline]
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<NetResult<usize>> {
+        Pin::new(&mut self.send).poll_write_vectored(cx, bufs)
+    }
+
+    #[inline]
+    fn is_write_vectored(&self) -> bool {
+        self.send.is_write_vectored()
+    }
+
+    #[inline]
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<NetResult<()>> {
+        Pin::new(&mut self.send).poll_flush(cx)
+    }
+
+    #[inline]
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<NetResult<()>> {
+        Pin::new(&mut self.send).poll_shutdown(cx)
+    }
+}

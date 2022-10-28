@@ -287,7 +287,7 @@ impl Config {
                 _ => Err(anyhow!(format!("Unknown proxy scheme: {}", u.scheme()))),
             })?;
         match config.transport_type {
-            TransportType::Tcp => Ok(()),
+            TransportType::Tcp | TransportType::Quic => Ok(()),
             TransportType::Tls => {
                 let tls_config = config
                     .tls
